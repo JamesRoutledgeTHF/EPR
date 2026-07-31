@@ -1,37 +1,19 @@
 library(DBI)
 library(odbc)
 
-query <- "
-SELECT *
-FROM [AandE_Attendance].[ECDS_Monthly_Performance1]
-WHERE Breakdown = '4 Hour Performance'
-  AND Organisation = 'Total'
-  AND Measure_Category = 'Percentage of Type 1 & 2 Attendances Admitted, Transferred or Discharged within 4 Hours'
-  AND Measure = 'Total'
-"
-
-df <- dbGetQuery(con, query)
-
-sort(unique(df$Effective_Snapshot_Date))
-
-
-query <- "
-SELECT DISTINCT Effective_Snapshot_Date
-FROM [Sitreps].[AandE_Attendances_And_Emergency_Admissions_Mthly1]
-ORDER BY Effective_Snapshot_Date
-"
-
-df <- dbGetQuery(con, query)
-
 query_monthly <- "
 SELECT 
     Provider_Code,
     Effective_Snapshot_Date,
 
-    SUM(Attends_Over_4Hrs_Arr_To_Adm_Tfr_Disch_Type1) AS over_4hrs,
-    SUM(AandE_Attends_Type1) AS total_attends,
+    SUM(Attends_Over_4Hrs_Arr_To_Adm_Tfr_Disch_Type1) AS total_over_4hrs,
+    SUM(AandE_Attends_Type1) AS total_type1_attends,
 
-  (
+    SUM(Dec_To_Adm_Over_12Hrs) AS DTAover12,
+
+    SUM(Dec_To_Adm_4_to_12Hrs + Dec_To_Adm_Over_12Hrs) AS DTAover4,
+
+    (
         1.0 - (
             SUM(Attends_Over_4Hrs_Arr_To_Adm_Tfr_Disch_Type1) * 1.0
             / NULLIF(SUM(AandE_Attends_Type1), 0)
@@ -67,6 +49,10 @@ SELECT
     SUM(AandE_Attends_Type1) AS total_type1_attends,
     SUM(Attends_Over_4Hrs_Arr_To_Adm_Tfr_Disch_Type1) AS total_over_4hrs,
 
+    SUM(Dec_To_Adm_Over_12Hrs) AS DTAover12,
+
+    SUM(Dec_To_Adm_4_to_12Hrs) + SUM(Dec_To_Adm_Over_12Hrs) AS DTAover4,
+
     (
         1.0 - (
             SUM(Attends_Over_4Hrs_Arr_To_Adm_Tfr_Disch_Type1) * 1.0
@@ -94,53 +80,83 @@ df_weekly <- dbGetQuery(con, query_weekly)
 library(readxl)
 library(writexl)
 library(dplyr)
+library(dplyr)
+library(lubridate)
 
 df_weekly <- df_weekly %>% mutate(Reporting_Month = floor_date(Reporting_Month, "month"))
 df <- df %>% mutate(Reporting_Month = floor_date(Effective_Snapshot_Date, "month"))
 
-df <- df %>% rename(pct_under_4hrs_monthly = pct_under_4hrs)
+df <- df %>%
+  rename(
+    pct_under_4hrs_monthly = pct_under_4hrs,
+    DTAover12_monthly = DTAover12,
+    DTAover4_monthly = DTAover4
+  )
+
+df_weekly <- df_weekly %>%
+  mutate(
+    Month = floor_date(as.Date(Reporting_Month), "month")
+  )
+
+df <- df %>%
+  mutate(
+    Month = floor_date(as.Date(Effective_Snapshot_Date), "month")
+  )
 
 df_join <- full_join(
   df_weekly,
-  df %>% select(Provider_Code, Reporting_Month, pct_under_4hrs_monthly),
-  by = c("Provider_Code", "Reporting_Month")
+  df %>% 
+    select(
+      Provider_Code,
+      Month,
+      total_type1_attends,
+      total_over_4hrs,
+      pct_under_4hrs_monthly,
+      DTAover12_monthly,
+      DTAover4_monthly
+    ),
+  by = c("Provider_Code", "Month")
 ) %>%
-  # Keep only one percentage column
   mutate(
-    pct_under_4hrs = coalesce(pct_under_4hrs, pct_under_4hrs_monthly)
+    total_type1_attends = coalesce(total_type1_attends.x, total_type1_attends.y),
+    total_over_4hrs = coalesce(total_over_4hrs.x, total_over_4hrs.y),
+    pct_under_4hrs = coalesce(pct_under_4hrs, pct_under_4hrs_monthly),
+    DTAover12 = coalesce(DTAover12, DTAover12_monthly),
+    DTAover4 = coalesce(DTAover4, DTAover4_monthly)
   ) %>%
-  # Drop the redundant monthly column
   select(
     Provider_Code,
-    Reporting_Month,
+    Month,
     total_type1_attends,
     total_over_4hrs,
+    DTAover12,
+    DTAover4,
     pct_under_4hrs
   )
 
+#write_xlsx(df_final, "AandE_Output.xlsx")
+
 epr_go_live <- read_xlsx("EPR_Go_Live_230326.xlsx") %>%
   mutate(
-    # Convert numeric Excel serials to Date
     GoLiveDate = as.Date(as.numeric(GoLiveDate), origin = "1899-12-30")
   )
 
-# Select only the columns we need from the Excel sheet
 epr_selected <- epr_go_live %>%
   select(`Trust Code`, GoLiveDate, GoLiveType)
 
 df_final <- df_join %>%
-  group_by(Provider_Code) %>%
-  filter(
-    !any(is.na(pct_under_4hrs)) &
-      n_distinct(Reporting_Month) == n_distinct(df_join$Reporting_Month)
+  mutate(
+    Provider_Code = case_when(
+      Provider_Code %in% c("RM2", "RW3") ~ "R0A",
+      Provider_Code %in% c("RLN", "RE9") ~ "R0B",
+      Provider_Code %in% c("RV8", "RC3") ~ "R1K",
+      TRUE ~ Provider_Code
+    )
   ) %>%
-  ungroup() %>%
-    left_join(
+  left_join(
     epr_selected,
     by = c("Provider_Code" = "Trust Code")
   )
-
-write_xlsx(df_final, "AandE_Output.xlsx")
 
 
 library(dplyr)
@@ -198,9 +214,18 @@ plot_df <- event_df %>%
   group_by(months_from_golive) %>%
   summarise(
     avg_pct_under_4hrs = mean(pct_under_4hrs, na.rm = TRUE),
+    sum_over_4hrs = mean(total_over_4hrs, na.rm = TRUE),
+    sum_over_4hrs_a2d = sum(DTAover4, na.rm = TRUE),
+    avg_over_4hrs_a2d = mean(DTAover4, na.rm = TRUE),
+    sum_over_12hrs_a2d = sum(DTAover12, na.rm = TRUE),
+    avg_over_12hrs_a2d = mean(DTAover12, na.rm = TRUE),
     n_trusts = n_distinct(Provider_Code),
     .groups = "drop"
-  )
+  ) %>%
+  filter(between(months_from_golive, -24, 24))
+
+breaks_df <- plot_df %>%
+  filter(months_from_golive %% 3 == 0)
 
 # Plot
 ggplot(plot_df,
@@ -208,22 +233,134 @@ ggplot(plot_df,
            y = avg_pct_under_4hrs)) +
   geom_line(size = 1.2, colour = "#0072B2") +
   geom_point(size = 2, colour = "#0072B2") +
-  
-  # Vertical line at go-live
   geom_vline(xintercept = 0,
              linetype = "dashed",
              colour = "red",
              linewidth = 1) +
-  
+  scale_x_continuous(
+    breaks = breaks_df$months_from_golive,
+    labels = paste0(
+      breaks_df$months_from_golive,
+      "\n(n=", breaks_df$n_trusts, ")"
+    )
+  ) +
   labs(
     title = "Big Bang Trusts: % Under 4 Hours Relative to Go-Live",
     subtitle = "Month 0 = Go-Live Month",
     x = "Months Relative to Go-Live",
     y = "Average % Under 4 Hours"
   ) +
-  
   theme_minimal() +
   theme(
     plot.title = element_text(face = "bold"),
     legend.position = "none"
   )
+
+
+# Plot
+ggplot(plot_df,
+       aes(x = months_from_golive,
+           y = avg_over_4hrs_a2d)) +
+  geom_line(size = 1.2, colour = "#0072B2") +
+  geom_point(size = 2, colour = "#0072B2") +
+  geom_vline(xintercept = 0,
+             linetype = "dashed",
+             colour = "red",
+             linewidth = 1) +
+  scale_x_continuous(
+    breaks = breaks_df$months_from_golive,
+    labels = paste0(
+      breaks_df$months_from_golive,
+      "\n(n=", breaks_df$n_trusts, ")"
+    )
+  ) +
+  labs(
+    title = "Big Bang Trusts: Patients Spending >4 hours from DTA to Admission",
+    subtitle = "Month 0 = Go-Live Month",
+    x = "Months Relative to Go-Live",
+    y = "Avg Total over 4 hours"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold"),
+    legend.position = "none"
+  )
+
+
+# Plot
+ggplot(plot_df,
+       aes(x = months_from_golive,
+           y = avg_over_12hrs_a2d)) +
+  geom_line(size = 1.2, colour = "#0072B2") +
+  geom_point(size = 2, colour = "#0072B2") +
+  geom_vline(xintercept = 0,
+             linetype = "dashed",
+             colour = "red",
+             linewidth = 1) +
+  scale_x_continuous(
+    breaks = breaks_df$months_from_golive,
+    labels = paste0(
+      breaks_df$months_from_golive,
+      "\n(n=", breaks_df$n_trusts, ")"
+    )
+  ) +
+  labs(
+    title = "Big Bang Trusts: Patients Spending >12 hours from DTA to Admission",
+    subtitle = "Month 0 = Go-Live Month",
+    x = "Months Relative to Go-Live",
+    y = "Avg Total over 12 hours"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold"),
+    legend.position = "none"
+  )
+
+
+# Average across trusts at each relative month
+plot_prov_df <- event_df %>%
+  group_by(months_from_golive, Provider_Code) %>%
+  summarise(
+    avg_pct_under_4hrs = mean(pct_under_4hrs, na.rm = TRUE),
+    sum_over_4hrs_a2d = sum(DTAover4, na.rm = TRUE),
+    avg_over_4hrs_a2d = mean(DTAover4, na.rm = TRUE),
+    sum_over_12hrs_a2d = sum(DTAover12, na.rm = TRUE),
+    n_trusts = n_distinct(Provider_Code),
+    .groups = "drop"
+  ) %>%
+  filter(between(months_from_golive, -24, 24))
+
+
+
+#by provider
+ggplot(plot_prov_df,
+       aes(x = months_from_golive,
+           y = sum_over_4hrs_a2d,
+           colour = Provider_Code,
+           group = Provider_Code)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 1.5) +
+  geom_vline(xintercept = 0,
+             linetype = "dashed",
+             colour = "red") +
+  scale_x_continuous(
+    breaks = breaks_df$months_from_golive,
+    labels = paste0(
+      breaks_df$months_from_golive,
+      "\n(n=", breaks_df$n_trusts, ")"
+    )
+  ) +
+  labs(
+    title = "Big Bang Trusts: % Under 4 Hours Relative to Go-Live",
+    subtitle = "One line per trust",
+    x = "Months Relative to Go-Live",
+    y = "Average % Under 4 Hours",
+    colour = "Provider Code"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold"),
+    legend.position = "right"
+  )
+
+
