@@ -24,12 +24,16 @@ Available AS (
 SELECT
     COALESCE(o.Organisation_Code, a.Organisation_Code) AS Organisation_Code,
     COALESCE(o.Effective_Snapshot_Date, a.Effective_Snapshot_Date) AS Effective_Snapshot_Date,
-    a.Total_Available_Beds,
-    o.Total_Occupied_Beds,
+
+    ROUND(a.Total_Available_Beds, 1) AS Total_Available_Beds,
+    ROUND(o.Total_Occupied_Beds, 1) AS Total_Occupied_Beds,
 
     CASE
         WHEN a.Total_Available_Beds = 0 THEN NULL
-        ELSE o.Total_Occupied_Beds * 100.0 / a.Total_Available_Beds
+        ELSE ROUND(
+            o.Total_Occupied_Beds * 100.0 / a.Total_Available_Beds,
+            1
+        )
     END AS Pct_Occupied
 
 FROM Occupied o

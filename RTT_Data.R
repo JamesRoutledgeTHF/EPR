@@ -4,12 +4,12 @@ SELECT
     Effective_Snapshot_Date,
 
     -- Total incomplete pathways
-    SUM(Total_All) AS Total_Incomplete_Pathways,
+    ROUND(SUM(Total_All), 1) AS Total_Incomplete_Pathways,
 
     -- Percentage waiting within 18 weeks
     CASE
         WHEN SUM(Total_All) = 0 THEN NULL
-        ELSE
+        ELSE ROUND(
             SUM(
                 Gt_00_To_01_Weeks +
                 Gt_01_To_02_Weeks +
@@ -29,12 +29,15 @@ SELECT
                 Gt_15_To_16_Weeks +
                 Gt_16_To_17_Weeks +
                 Gt_17_To_18_Weeks
-            ) * 100.0 / SUM(Total_All)
+            ) * 100.0 / SUM(Total_All),
+            1
+        )
     END AS Pct_Within_18_Weeks,
-    
+
+    -- Sum waiting within 18 weeks
     CASE
         WHEN SUM(Total_All) = 0 THEN NULL
-        ELSE
+        ELSE ROUND(
             SUM(
                 Gt_00_To_01_Weeks +
                 Gt_01_To_02_Weeks +
@@ -54,26 +57,28 @@ SELECT
                 Gt_15_To_16_Weeks +
                 Gt_16_To_17_Weeks +
                 Gt_17_To_18_Weeks
-            ) 
-    END AS Sum_Within_18_Weeks,
-    
-CASE
-    WHEN SUM(Total_All) = 0 THEN NULL
-    ELSE
-        SUM(
-            Gt_52_Weeks 
-        ) * 100.0 / SUM(Total_All)
-END AS Pct_Over_52_Weeks,
-
-CASE
-    WHEN SUM(Total_All) = 0 THEN NULL
-    ELSE
-        SUM(
-          Gt_52_Weeks
-           
+            ),
+            1
         )
-END AS Sum_Over_52_Weeks
+    END AS Sum_Within_18_Weeks,
 
+    -- Percentage waiting over 52 weeks
+    CASE
+        WHEN SUM(Total_All) = 0 THEN NULL
+        ELSE ROUND(
+            SUM(Gt_52_Weeks) * 100.0 / SUM(Total_All),
+            1
+        )
+    END AS Pct_Over_52_Weeks,
+
+    -- Sum waiting over 52 weeks
+    CASE
+        WHEN SUM(Total_All) = 0 THEN NULL
+        ELSE ROUND(
+            SUM(Gt_52_Weeks),
+            1
+        )
+    END AS Sum_Over_52_Weeks
 
 FROM RTT.Full_Dataset1
 
